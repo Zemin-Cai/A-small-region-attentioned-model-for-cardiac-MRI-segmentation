@@ -1,5 +1,6 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ['TORCH_HOME'] ='/media/stu/74A84304A842C478/ConvNextUnet/pretrained_ckpt'
 import torch
 import logging
 import random
@@ -26,6 +27,9 @@ def trainer_acdc(args, model, snapshot_path):
     db_train = ACDC_dataset(base_dir=args.root_path, list_dir=args.list_dir, split="train",
                                transform=transforms.Compose(
                                    [RandomGenerator(output_size=[args.img_size, args.img_size])]))
+    db_val = ACDC_dataset(base_dir="root2/data/ACDC/val_npz", list_dir=args.list_dir, split="val",
+                            transform=transforms.Compose(
+                                [RandomGenerator(output_size=[args.img_size, args.img_size])]))
 
 
     print("The length of train set is: {}".format(len(db_train)))
@@ -36,8 +40,8 @@ def trainer_acdc(args, model, snapshot_path):
 
     trainloader = DataLoader(db_train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True,
                              worker_init_fn=worker_init_fn)
-    # valloader = DataLoader(db_val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True,  # 4
-    #                          worker_init_fn=worker_init_fn)
+    valloader = DataLoader(db_val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True,  # 4
+                             worker_init_fn=worker_init_fn)
 
     if args.n_gpu > 1:
         model = nn.DataParallel(model)  # .cuda()
@@ -93,10 +97,10 @@ def trainer_acdc(args, model, snapshot_path):
             writer.add_scalar('info/dice', dice, iter_num)
             writer.add_scalar('info/mean_dice', mean, iter_num)
 
-            logging.info('iteration %d : loss : %f, mean_dice: %f' % (
-                iter_num, loss.item(), mean.item()))
-            logging.info('iteration %d : loss : %f, loss_ce: %f, dice: %f, mean_dice: %f' % (
-                iter_num, loss.item(), loss_ce.item(), dice.item(), mean.item()))
+            # logging.info('iteration %d : loss : %f, mean_dice: %f' % (
+            #     iter_num, loss.item(), mean.item()))
+            # logging.info('iteration %d : loss : %f, loss_ce: %f, dice: %f, mean_dice: %f' % (
+            #     iter_num, loss.item(), loss_ce.item(), dice.item(), mean.item()))
 
             if iter_num % 20 == 0:
                 image = image_batch[1, 0:1, :, :]
@@ -107,18 +111,21 @@ def trainer_acdc(args, model, snapshot_path):
                 writer.add_image('train/Prediction', outputs[1, ...] * 50, iter_num)
                 labs = label_batch[1, ...].unsqueeze(0) * 50
                 writer.add_image('train/GroundTruth', labs, iter_num)
-
+        logging.info('iteration %d : loss : %f, mean_dice: %f' % (
+            iter_num, loss.item(), mean.item()))
         epoch_loss = total_loss / batch
         writer.add_scalar('info/epoch_loss', epoch_loss, epoch_num)
 
-        # print("Start Validation:")
-        # val_epoch_loss, val_epoch_loss_ce, val_epoch_dice = validation(args, valloader, model)
-        # logging.info('val_loss : %f, val_loss_ce: %f, val_dice: %f' % (val_epoch_loss, val_epoch_loss_ce,
-        #                                                                val_epoch_dice))
-        # writer.add_scalar('info/epoch_val_loss', val_epoch_loss, epoch_num)
-        writer.add_scalars('train_loss_and_val_loss', {'info/train_loss': epoch_loss}#,
-                                                       # 'info/val_loss': val_epoch_loss}
-                           , epoch_num)
+        print("Start Validation:")
+        val_epoch_loss, val_epoch_loss_ce, val_epoch_dice = validation(args, valloader, model)
+        if val_epoch_dice >= best_performance:
+            best_performance = val_epoch_dice
+        logging.info('val_loss : %f, val_loss_ce: %f, val_dice: %f' % (val_epoch_loss, val_epoch_loss_ce,
+                                                                       val_epoch_dice))
+        writer.add_scalar('info/epoch_val_loss', val_epoch_loss, epoch_num)
+        writer.add_scalars('train_loss_and_val_loss', {'info/train_loss': epoch_loss,
+                                                       'info/val_loss': val_epoch_loss}, epoch_num)
+        print("best=", best_performance)
 
         save_interval = 10
         if (epoch_num + 1) % save_interval == 0:
@@ -131,38 +138,43 @@ def trainer_acdc(args, model, snapshot_path):
             torch.save(model.state_dict(), save_mode_path)
             logging.info("save model to {}".format(save_mode_path))
             iterator.close()
-            break
+            # break
+        if val_epoch_dice >= best_performance:
+            save_mode_path = os.path.join(snapshot_path, 'best.pth')
+            torch.save(model.state_dict(), save_mode_path)
+            logging.info("save model to {}".format(save_mode_path))
+            iterator.close()
+            # break
 
     writer.close()
     return "Training Finished!"
 
-# def validation(args, valloader, model):
-#     model.eval()
-#     ce_loss = CrossEntropyLoss()
-#     dice_loss = DiceLoss(args.num_classes)
-#     detail_loss_func = DetailAggregateLoss()
-#     val_total_dice = 0.0
-#     val_total_loss = 0.0
-#     val_total_loss_ce = 0.0
-#     iteration = 0
-#
-#     with torch.no_grad():
-#         for i_batch, sampled_batch in enumerate(valloader):
-#             iteration += 1
-#             image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
-#             image_batch, label_batch = image_batch.cuda(), label_batch.cuda()
-#
-#             preds = model(image_batch)
-#             val_loss_ce = ce_loss(preds, label_batch[:].long())
-#             val_loss_dice = dice_loss(preds, label_batch, softmax=True)
-#             val_loss = 0.4 * val_loss_ce + 0.6 * val_loss_dice
-#             val_dice = 1 - val_loss_dice
-#
-#             val_total_loss += val_loss.item()
-#             val_total_loss_ce += val_loss_ce.item()
-#             val_total_dice += val_dice.item()
-#
-#         val_mean_loss = val_total_loss / iteration
-#         val_mean_loss_ce = val_total_loss_ce / iteration
-#         val_mean_dice = val_total_dice / iteration
-#     return val_mean_loss, val_mean_loss_ce, val_mean_dice
+def validation(args, valloader, model):
+    model.eval()
+    ce_loss = CrossEntropyLoss()
+    dice_loss = DiceLoss(args.num_classes)
+    val_total_dice = 0.0
+    val_total_loss = 0.0
+    val_total_loss_ce = 0.0
+    iteration = 0
+
+    with torch.no_grad():
+        for i_batch, sampled_batch in enumerate(valloader):
+            iteration += 1
+            image_batch, label_batch = sampled_batch['image'], sampled_batch['label']
+            image_batch, label_batch = image_batch.cuda(), label_batch.cuda()
+
+            preds = model(image_batch)
+            val_loss_ce = ce_loss(preds, label_batch[:].long())
+            val_loss_dice = dice_loss(preds, label_batch, softmax=True)
+            val_loss = 0.4 * val_loss_ce + 0.6 * val_loss_dice
+            val_dice = 1 - val_loss_dice
+
+            val_total_loss += val_loss.item()
+            val_total_loss_ce += val_loss_ce.item()
+            val_total_dice += val_dice.item()
+
+        val_mean_loss = val_total_loss / iteration
+        val_mean_loss_ce = val_total_loss_ce / iteration
+        val_mean_dice = val_total_dice / iteration
+    return val_mean_loss, val_mean_loss_ce, val_mean_dice
