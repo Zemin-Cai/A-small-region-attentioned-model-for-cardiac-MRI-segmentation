@@ -114,8 +114,8 @@ if __name__ == "__main__":
     args.is_pretrain = True
 
     net = ConvNextUNet(num_classes=args.num_classes).cuda()
-    # for j in range(9,10, 400):
-    snapshot = os.path.join(r"/media/stu/74A84304A842C478/ConvNextUnet/snapshot_path", 'epoch_379.pth')
+  
+    snapshot = os.path.join(r"/media/stu/74A84304A842C478/ConvNextUnet/snapshot_path", 'best.pth')
     msg = net.load_state_dict(torch.load(snapshot), strict=True)
 
     print("self trained Convnextunet", msg)
